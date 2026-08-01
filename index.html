@@ -8,52 +8,38 @@
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #000; overflow: hidden; font-family: sans-serif; }
         #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #111; z-index: 10; color: #fff; }
         .header { font-size: 24px; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px; }
-        .btn { padding: 15px 30px; margin: 10px; font-size: 18px; background: #28a745; color: white; border: none; cursor: pointer; text-transform: uppercase; font-weight: bold; }
+        .btn { padding: 15px 30px; margin: 10px; font-size: 18px; background: #28a745; color: white; border: none; cursor: pointer; text-transform: uppercase; font-weight: bold; border-radius: 5px; }
         .btn-blue { background: #0056b3; }
         #game-canvas { display: none; width: 100%; height: 100%; background: #1a1a2e; }
-        #fullscreen-btn { position: absolute; top: 10px; right: 10px; z-index: 20; padding: 10px; background: rgba(0,0,0,0.5); color: #fff; border: 1px solid #555; cursor: pointer; display: none; }
-        #debug-info { position: absolute; top: 10px; left: 10px; z-index: 20; color: #0f0; display: none; pointer-events: none; text-shadow: 1px 1px 2px #000;}
-        #error-log { position: absolute; bottom: 20px; left: 20px; color: #ff4444; font-family: monospace; font-size: 14px; max-width: 90%; z-index: 30; }
+        #fullscreen-btn { position: absolute; top: 10px; right: 10px; z-index: 20; padding: 10px 15px; background: rgba(0,0,0,0.6); color: #fff; border: 1px solid #555; cursor: pointer; display: none; border-radius: 4px; }
+        #debug-info { position: absolute; top: 10px; left: 10px; z-index: 20; color: #0f0; display: none; pointer-events: none; font-family: monospace; font-size: 16px; text-shadow: 1px 1px 2px #000;}
     </style>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/box2dweb/2.1.a.3/Box2dWeb-2.1.a.3.min.js"></script>
 </head>
 <body>
 
     <button id="fullscreen-btn" onclick="toggleFullScreen()">[  ] Fullskjerm</button>
     <div id="debug-info">Hastighet: 0 km/t</div>
-    <div id="error-log"></div>
 
     <div id="ui-layer">
-        <div class="header">Fysikksimulator (1 Player)</div>
+        <div class="header">Offroad Fysikksimulator</div>
         <button class="btn" onclick="startGame(true)">Start med Tastatur</button>
         <button class="btn btn-blue" onclick="startGame(false)">Start med Gamepad</button>
-        <p style="color:#888; margin-top:20px;">Tastatur: Pil Høyre (Gass), Pil Venstre (Brems/Rev), Pil Opp/Ned (Tilt i luften)</p>
+        <p style="color:#888; margin-top:20px;">Tastatur: Pil Høyre (Gass), Pil Venstre (Brems/Rev), Pil Opp/Ned (Tilt)</p>
     </div>
 
     <canvas id="game-canvas"></canvas>
 
     <script>
-        // Box2D variabler deklareres her, men tilordnes først når spillet starter
-        let b2Vec2, b2BodyDef, b2Body, b2FixtureDef, b2World, b2PolygonShape, b2CircleShape, b2LineJointDef;
-
-        let world, car, ctx, canvas;
+        let canvas, ctx;
         let gameActive = false;
         let useKeyboard = false;
-        const SCALE = 30; 
         let engineAudio;
 
         let keys = { right: false, left: false, up: false, down: false };
 
-        function logError(msg) {
-            document.getElementById('error-log').innerText = msg;
-            console.error(msg);
-        }
-
         function toggleFullScreen() {
             if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen().catch(err => {
-                    logError("Fullskjerm blokkert: " + err.message);
-                });
+                document.documentElement.requestFullscreen().catch(() => {});
             } else if (document.exitFullscreen) {
                 document.exitFullscreen();
             }
@@ -72,6 +58,7 @@
             if(e.code === 'ArrowDown') keys.down = false;
         });
 
+        // --- LYDSYSTEM ---
         class AudioSystem {
             constructor() {
                 this.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -94,16 +81,16 @@
             update(throttle) {
                 if(this.ctx.state === 'suspended') this.ctx.resume();
                 this.currentRPM += (throttle - this.currentRPM) * 0.1;
-                this.osc.frequency.setTargetAtTime(40 + (this.currentRPM * 120), this.ctx.currentTime, 0.05);
-                this.filter.frequency.setTargetAtTime(200 + (this.currentRPM * 2000), this.ctx.currentTime, 0.05);
-                this.gain.gain.setTargetAtTime(0.1 + (this.currentRPM * 0.3), this.ctx.currentTime, 0.05);
+                this.osc.frequency.setTargetAtTime(40 + (this.currentRPM * 140), this.ctx.currentTime, 0.05);
+                this.filter.frequency.setTargetAtTime(150 + (this.currentRPM * 2200), this.ctx.currentTime, 0.05);
+                this.gain.gain.setTargetAtTime(0.08 + (this.currentRPM * 0.25), this.ctx.currentTime, 0.05);
 
                 if (this.prevThrottle > 0.8 && throttle < 0.1) this.triggerBackfire();
                 this.prevThrottle = throttle;
             }
 
             triggerBackfire() {
-                const bufferSize = this.ctx.sampleRate * 0.15;
+                const bufferSize = this.ctx.sampleRate * 0.12;
                 const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
                 const data = buffer.getChannelData(0);
                 for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
@@ -111,12 +98,12 @@
                 const noise = this.ctx.createBufferSource();
                 noise.buffer = buffer;
                 const nGain = this.ctx.createGain();
-                nGain.gain.setValueAtTime(0.8, this.ctx.currentTime);
+                nGain.gain.setValueAtTime(0.7, this.ctx.currentTime);
                 nGain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
                 
                 const bp = this.ctx.createBiquadFilter();
                 bp.type = 'bandpass';
-                bp.frequency.value = 300;
+                bp.frequency.value = 350;
 
                 noise.connect(bp);
                 bp.connect(nGain);
@@ -125,44 +112,202 @@
             }
         }
 
-        function initBox2D() {
-            if (typeof Box2D === 'undefined') {
-                throw new Error("Box2D-motoren feilet under lasting. Sjekk nettverket eller deaktiver adblock.");
+        // --- INNEBYGD 2D FYSIKKMOTOR ---
+        const gravity = 0.4;
+        let terrainPoints = [];
+
+        class Wheel {
+            constructor(offsetX, offsetY, radius) {
+                this.offsetX = offsetX;
+                this.offsetY = offsetY;
+                this.radius = radius;
+                this.x = 0;
+                this.y = 0;
+                this.oldX = 0;
+                this.oldY = 0;
+                this.vx = 0;
+                this.vy = 0;
+                this.angularVelocity = 0;
+                this.angle = 0;
+                this.isGrounded = false;
             }
-            b2Vec2 = Box2D.Common.Math.b2Vec2;
-            b2BodyDef = Box2D.Dynamics.b2BodyDef;
-            b2Body = Box2D.Dynamics.b2Body;
-            b2FixtureDef = Box2D.Dynamics.b2FixtureDef;
-            b2World = Box2D.Dynamics.b2World;
-            b2PolygonShape = Box2D.Collision.Shapes.b2PolygonShape;
-            b2CircleShape = Box2D.Collision.Shapes.b2CircleShape;
-            b2LineJointDef = Box2D.Dynamics.Joints.b2LineJointDef;
+
+            update(chassisX, chassisY, chassisAngle) {
+                // Kalkuler forventet posisjon festet til chassis
+                const rad = chassisAngle;
+                const targetX = chassisX + (this.offsetX * Math.cos(rad) - this.offsetY * Math.sin(rad));
+                const targetY = chassisY + (this.offsetX * Math.sin(rad) + this.offsetY * Math.cos(rad));
+
+                // Fjæring & demping (Spring constraint mot target)
+                const k = 0.15; // Fjærstivhet
+                const damping = 0.85; // Støtdemper
+
+                this.vx += (targetX - this.x) * k;
+                this.vy += (targetY - this.y) * k;
+                this.vy += gravity;
+
+                this.vx *= damping;
+                this.vy *= damping;
+
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Terreng-kollisjon
+                this.isGrounded = false;
+                for (let i = 0; i < terrainPoints.length - 1; i++) {
+                    let p1 = terrainPoints[i];
+                    let p2 = terrainPoints[i+1];
+
+                    if (this.x >= p1.x && this.x <= p2.x) {
+                        // Linjær interpolasjon for å finne bakkehøyde ved hjul-X
+                        let t = (this.x - p1.x) / (p2.x - p1.x);
+                        let groundY = p1.y + t * (p2.y - p1.y);
+
+                        if (this.y + this.radius > groundY) {
+                            this.y = groundY - this.radius;
+                            this.vy = 0;
+                            this.isGrounded = true;
+
+                            // Friksjon & Fremdrift
+                            this.x += this.angularVelocity * this.radius;
+                            this.angularVelocity *= 0.92; // Dekkfriksjon
+                        }
+                        break;
+                    }
+                }
+
+                this.angle += this.angularVelocity;
+            }
+        }
+
+        class Car {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.vx = 0;
+                this.vy = 0;
+                this.angle = 0;
+                this.angularVelocity = 0;
+                this.wheelR = new Wheel(-45, 25, 18);
+                this.wheelF = new Wheel(45, 25, 18);
+                
+                // Initier hjulposisjoner
+                this.wheelR.x = x - 45; this.wheelR.y = y + 25;
+                this.wheelF.x = x + 45; this.wheelF.y = y + 25;
+            }
+
+            update(throttle, tilt) {
+                this.vy += gravity;
+
+                // Motor-pådrag til hjulene (4x4)
+                const enginePower = 0.08;
+                if (throttle !== 0) {
+                    if (this.wheelR.isGrounded) this.wheelR.angularVelocity += throttle * enginePower;
+                    if (this.wheelF.isGrounded) this.wheelF.angularVelocity += throttle * enginePower;
+                }
+
+                // Tilt i luft / vektoverføring
+                if (Math.abs(tilt) > 0.1) {
+                    this.angularVelocity += tilt * 0.005;
+                }
+
+                // Oppdater hjul (Fjæring)
+                this.wheelR.update(this.x, this.y, this.angle);
+                this.wheelF.update(this.x, this.y, this.angle);
+
+                // Reaksjonskraft fra hjulene tilbake til chassiset
+                const avgWheelY = (this.wheelR.y + this.wheelF.y) / 2 - 25;
+                const avgWheelX = (this.wheelR.x + this.wheelF.x) / 2;
+
+                this.vx += (avgWheelX - this.x) * 0.05;
+                this.vy += (avgWheelY - this.y) * 0.05;
+
+                // Vinkel basert på posisjonen til bakhjul vs forhjul
+                let targetAngle = Math.atan2(this.wheelF.y - this.wheelR.y, this.wheelF.x - this.wheelR.x);
+                this.angularVelocity += (targetAngle - this.angle) * 0.05;
+                this.angularVelocity *= 0.85; // Rotasjonsdemping
+
+                this.vx *= 0.99;
+                this.vy *= 0.99;
+
+                this.x += this.vx;
+                this.y += this.vy;
+                this.angle += this.angularVelocity;
+            }
+
+            draw() {
+                // Tegn Hjul
+                [this.wheelR, this.wheelF].forEach(w => {
+                    ctx.save();
+                    ctx.translate(w.x, w.y);
+                    ctx.rotate(w.angle);
+                    ctx.beginPath();
+                    ctx.arc(0, 0, w.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = '#222';
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 3;
+                    // Tegn felg-linje for å vise rotasjon
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0); ctx.lineTo(w.radius, 0);
+                    ctx.stroke();
+                    ctx.restore();
+                });
+
+                // Tegn Chassis
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+                ctx.fillStyle = '#cc0000';
+                ctx.fillRect(-55, -20, 110, 35); // Karosseri
+                ctx.fillStyle = '#880000';
+                ctx.fillRect(-35, -40, 70, 25);  // Tak
+                ctx.restore();
+            }
+        }
+
+        let car;
+
+        function buildTerrain() {
+            terrainPoints = [];
+            let currentX = -200;
+            let currentY = 400;
+
+            for (let i = 0; i < 500; i++) {
+                let difficulty = i / 500;
+                let stepX = 40;
+                let wave = Math.sin(currentX * 0.005) * 80;
+                let bumps = Math.sin(currentX * 0.03) * (30 * difficulty);
+                let noise = (Math.random() - 0.5) * (40 * difficulty);
+
+                let nextX = currentX + stepX;
+                let nextY = 400 + wave + bumps + noise - (difficulty * 300); // Stiger gradvis
+
+                terrainPoints.push({ x: currentX, y: currentY });
+                currentX = nextX;
+                currentY = nextY;
+            }
         }
 
         function startGame(keyboard) {
-            try {
-                initBox2D();
-                
-                useKeyboard = keyboard;
-                document.getElementById('ui-layer').style.display = 'none';
-                canvas = document.getElementById('game-canvas');
-                canvas.style.display = 'block';
-                document.getElementById('fullscreen-btn').style.display = 'block';
-                document.getElementById('debug-info').style.display = 'block';
-                ctx = canvas.getContext('2d');
-                
-                engineAudio = new AudioSystem();
-                
-                resize();
-                window.addEventListener('resize', resize);
-                
-                initPhysics();
-                gameActive = true;
-                requestAnimationFrame(loop);
-                
-            } catch (error) {
-                logError(error.stack || error.message);
-            }
+            useKeyboard = keyboard;
+            document.getElementById('ui-layer').style.display = 'none';
+            canvas = document.getElementById('game-canvas');
+            canvas.style.display = 'block';
+            document.getElementById('fullscreen-btn').style.display = 'block';
+            document.getElementById('debug-info').style.display = 'block';
+            ctx = canvas.getContext('2d');
+            
+            engineAudio = new AudioSystem();
+            
+            resize();
+            window.addEventListener('resize', resize);
+            
+            buildTerrain();
+            car = new Car(100, 200);
+
+            gameActive = true;
+            requestAnimationFrame(loop);
         }
 
         function resize() {
@@ -170,208 +315,65 @@
             canvas.height = window.innerHeight;
         }
 
-        function initPhysics() {
-            world = new b2World(new b2Vec2(0, 10), true);
-
-            const groundDef = new b2BodyDef();
-            groundDef.type = b2Body.b2_staticBody;
-            const groundBody = world.CreateBody(groundDef);
-
-            let currentX = -5;
-            let currentY = 15;
-            
-            for (let i = 0; i < 300; i++) {
-                let difficulty = i / 300;
-                let stepX = 2;
-                let wave = Math.sin(currentX * 0.2) * 2;
-                let noise = (Math.random() - 0.5) * (3 * difficulty);
-                let nextX = currentX + stepX;
-                let nextY = 15 + wave + noise - (difficulty * 10); 
-
-                const edgeShape = new b2PolygonShape();
-                edgeShape.SetAsEdge(new b2Vec2(currentX, currentY), new b2Vec2(nextX, nextY));
-                
-                const fixDef = new b2FixtureDef();
-                fixDef.shape = edgeShape;
-                fixDef.friction = 1.0; 
-                fixDef.restitution = 0.1;
-                groundBody.CreateFixture(fixDef);
-
-                if (nextY < currentY && Math.random() > 0.5 && i < 150) {
-                    for(let p = 0; p < 4; p++) {
-                        const pDef = new b2BodyDef();
-                        pDef.type = b2Body.b2_dynamicBody;
-                        pDef.position.Set(currentX + (Math.random()), currentY - (Math.random() * 2));
-                        const pBody = world.CreateBody(pDef);
-                        const pFix = new b2FixtureDef();
-                        pFix.shape = new b2CircleShape(0.2); 
-                        pFix.density = 2.0;
-                        pFix.friction = 0.5;
-                        pBody.CreateFixture(pFix);
-                    }
-                }
-                currentX = nextX;
-                currentY = nextY;
-            }
-
-            car = {};
-            const chDef = new b2BodyDef();
-            chDef.type = b2Body.b2_dynamicBody;
-            chDef.position.Set(5, 5);
-            car.chassis = world.CreateBody(chDef);
-            
-            const chShape = new b2PolygonShape();
-            chShape.SetAsBox(1.6, 0.4); 
-            const chFix = new b2FixtureDef();
-            chFix.shape = chShape;
-            chFix.density = 80.0; 
-            car.chassis.CreateFixture(chFix);
-
-            const wheelFix = new b2FixtureDef();
-            wheelFix.shape = new b2CircleShape(0.5); 
-            wheelFix.density = 20.0;
-            wheelFix.friction = 2.0; 
-            wheelFix.restitution = 0.2; 
-
-            const wheelDef = new b2BodyDef();
-            wheelDef.type = b2Body.b2_dynamicBody;
-
-            wheelDef.position.Set(5 - 1.2, 5 + 0.6);
-            car.wheelR = world.CreateBody(wheelDef);
-            car.wheelR.CreateFixture(wheelFix);
-
-            wheelDef.position.Set(5 + 1.2, 5 + 0.6);
-            car.wheelF = world.CreateBody(wheelDef);
-            car.wheelF.CreateFixture(wheelFix);
-
-            const jointDef = new b2LineJointDef();
-            const axis = new b2Vec2(0, 1); 
-
-            jointDef.Initialize(car.chassis, car.wheelR, car.wheelR.GetWorldCenter(), axis);
-            jointDef.enableLimit = true;
-            jointDef.lowerTranslation = -0.15; 
-            jointDef.upperTranslation = 0.4;  
-            car.jointR = world.CreateJoint(jointDef);
-
-            jointDef.Initialize(car.chassis, car.wheelF, car.wheelF.GetWorldCenter(), axis);
-            car.jointF = world.CreateJoint(jointDef);
-        }
-
-        function applySuspensionDamper(joint, wheel) {
-            const translation = joint.GetJointTranslation();
-            const speed = joint.GetJointSpeed();
-            
-            const k = 400;
-            const c = 20;  
-            const force = -k * translation - c * speed;
-
-            const forceVec = car.chassis.GetWorldVector(new b2Vec2(0, force));
-            wheel.ApplyForce(forceVec, wheel.GetWorldCenter());
-            car.chassis.ApplyForce(new b2Vec2(-forceVec.x, -forceVec.y), wheel.GetWorldCenter());
-        }
-
-        function applyPhysicsInput() {
+        function applyInput() {
             let throttle = 0;
             let tilt = 0;
 
             if (useKeyboard) {
                 if (keys.right) throttle = 1;
-                if (keys.left) throttle = -1; 
-                if (keys.up) tilt = -1; 
-                if (keys.down) tilt = 1; 
+                if (keys.left) throttle = -1;
+                if (keys.up) tilt = -1;
+                if (keys.down) tilt = 1;
             } else {
                 const gps = navigator.getGamepads ? navigator.getGamepads() : [];
                 const gp = gps[0];
                 if (gp && gp.buttons && gp.buttons.length > 7) {
-                    throttle = gp.buttons[7].value; 
-                    if (throttle === 0 && gp.buttons[6].value > 0) throttle = -gp.buttons[6].value; 
-                    tilt = gp.axes[0]; 
+                    throttle = gp.buttons[7].value; // R2
+                    if (throttle === 0 && gp.buttons[6].value > 0) throttle = -gp.buttons[6].value; // L2
+                    tilt = gp.axes[0]; // Left stick
                 }
             }
 
-            const maxTorque = 400;
-
-            if (throttle > 0.05 || throttle < -0.05) {
-                car.wheelR.ApplyTorque(maxTorque * throttle);
-                car.wheelF.ApplyTorque(maxTorque * throttle);
-            } else {
-                car.wheelR.SetAngularVelocity(car.wheelR.GetAngularVelocity() * 0.96);
-                car.wheelF.SetAngularVelocity(car.wheelF.GetAngularVelocity() * 0.96);
-            }
-
-            if (Math.abs(tilt) > 0.1) {
-                car.chassis.ApplyTorque(tilt * 1000);
-            }
-
-            applySuspensionDamper(car.jointR, car.wheelR);
-            applySuspensionDamper(car.jointF, car.wheelF);
-
+            car.update(throttle, tilt);
             engineAudio.update(Math.abs(throttle));
 
-            const vel = car.chassis.GetLinearVelocity();
-            const kmh = Math.round(Math.sqrt(vel.x * vel.x + vel.y * vel.y) * 3.6);
-            document.getElementById('debug-info').innerText = `Hastighet: ${kmh} km/t`;
+            const speed = Math.round(Math.sqrt(car.vx * car.vx + car.vy * car.vy) * 3.6);
+            document.getElementById('debug-info').innerText = `Hastighet: ${speed} km/t`;
         }
 
-        function drawWorld() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            const carPos = car.chassis.GetPosition();
-            ctx.save();
-            ctx.translate(canvas.width / 2, canvas.height / 2 + 100);
-            ctx.scale(SCALE, SCALE);
-            ctx.translate(-carPos.x, -carPos.y);
-
-            for (let b = world.GetBodyList(); b; b = b.GetNext()) {
-                const type = b.GetType();
-                const pos = b.GetPosition();
-                const angle = b.GetAngle();
-
-                ctx.save();
-                ctx.translate(pos.x, pos.y);
-                ctx.rotate(angle);
-
-                for (let f = b.GetFixtureList(); f; f = f.GetNext()) {
-                    const shape = f.GetShape();
-
-                    if (shape instanceof b2PolygonShape) {
-                        ctx.beginPath();
-                        const vertices = shape.GetVertices();
-                        ctx.moveTo(vertices[0].x, vertices[0].y);
-                        for (let i = 1; i < shape.GetVertexCount(); i++) {
-                            ctx.lineTo(vertices[i].x, vertices[i].y);
-                        }
-                        ctx.closePath();
-                        
-                        if (type === b2Body.b2_staticBody) {
-                            ctx.strokeStyle = '#555'; ctx.lineWidth = 0.05; ctx.stroke();
-                        } else {
-                            ctx.fillStyle = '#cc0000'; ctx.fill();
-                        }
-                    } else if (shape instanceof b2CircleShape) {
-                        ctx.beginPath();
-                        ctx.arc(0, 0, shape.GetRadius(), 0, Math.PI * 2);
-                        
-                        if(b === car.wheelR || b === car.wheelF) {
-                            ctx.fillStyle = '#222'; ctx.fill();
-                            ctx.moveTo(0, 0); ctx.lineTo(shape.GetRadius(), 0);
-                            ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.05; ctx.stroke();
-                        } else {
-                            ctx.fillStyle = '#886644'; ctx.fill();
-                        }
-                    }
-                }
-                ctx.restore();
+        function drawTerrain() {
+            ctx.beginPath();
+            ctx.moveTo(terrainPoints[0].x, terrainPoints[0].y);
+            for (let i = 1; i < terrainPoints.length; i++) {
+                ctx.lineTo(terrainPoints[i].x, terrainPoints[i].y);
             }
-            ctx.restore();
+            ctx.lineTo(terrainPoints[terrainPoints.length - 1].x, canvas.height + 2000);
+            ctx.lineTo(terrainPoints[0].x, canvas.height + 2000);
+            ctx.closePath();
+
+            ctx.fillStyle = '#3a2511';
+            ctx.fill();
+            ctx.strokeStyle = '#4e8752';
+            ctx.lineWidth = 8;
+            ctx.stroke();
         }
 
         function loop() {
             if (!gameActive) return;
-            applyPhysicsInput();
-            world.Step(1 / 60, 10, 10);
-            world.ClearForces();
-            drawWorld();
+
+            applyInput();
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Kameratransformasjon (Følg bilen)
+            ctx.save();
+            ctx.translate(canvas.width / 2 - car.x, canvas.height / 2 - car.y);
+
+            drawTerrain();
+            car.draw();
+
+            ctx.restore();
+
             requestAnimationFrame(loop);
         }
     </script>
