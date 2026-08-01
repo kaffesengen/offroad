@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Offroad Fysikksimulator</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #000; overflow: hidden; font-family: sans-serif; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #111; z-index: 10; color: #fff; }
+        .header { font-size: 24px; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px; }
+        .btn { padding: 15px 30px; margin: 10px; font-size: 18px; background: #28a745; color: white; border: none; cursor: pointer; text-transform: uppercase; font-weight: bold; }
+        .btn-blue { background: #0056b3; }
+        #game-canvas { display: none; width: 100%; height: 100%; background: #1a1a2e; }
+        #fullscreen-btn { position: absolute; top: 10px; right: 10px; z-index: 20; padding: 10px; background: rgba(0,0,0,0.5); color: #fff; border: 1px solid #555; cursor: pointer; display: none; }
+        #debug-info { position: absolute; top: 10px; left: 10px; z-index: 20; color: #0f0; display: none; pointer-events: none; text-shadow: 1px 1px 2px #000;}
+        #error-log { position: absolute; bottom: 20px; left: 20px; color: #ff4444; font-family: monospace; font-size: 14px; max-width: 90%; z-index: 30; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/box2dweb/2.1.a.3/Box2dWeb-2.1.a.3.min.js"></script>
+</head>
+<body>
+
+    <button id="fullscreen-btn" onclick="toggleFullScreen()">[  ] Fullskjerm</button>
+    <div id="debug-info">Hastighet: 0 km/t</div>
+    <div id="error-log"></div>
+
+    <div id="ui-layer">
+        <div class="header">Fysikksimulator (1 Player)</div>
+        <button class="btn" onclick="startGame(true)">Start med Tastatur</button>
+        <button class="btn btn-blue" onclick="startGame(false)">Start med Gamepad</button>
+        <p style="color:#888; margin-top:20px;">Tastatur: Pil Høyre (Gass), Pil Venstre (Brems/Rev), Pil Opp/Ned (Tilt i luften)</p>
+    </div>
+
+    <canvas id="game-canvas"></canvas>
+
+    <script>
+        // Box2D variabler deklareres her, men tilordnes først når spillet starter
+        let b2Vec2, b2BodyDef, b2Body, b2FixtureDef, b2World, b2PolygonShape, b2CircleShape, b2LineJointDef;
+
+        let world, car, ctx, canvas;
+        let gameActive = false;
+        let useKeyboard = false;
+        const SCALE = 30; 
+        let engineAudio;
+
+        let keys = { right: false, left: false, up: false, down: false };
+
+        function logError(msg) {
+            document.getElementById('error-log').innerText = msg;
+            console.error(msg);
+        }
+
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    logError("Fullskjerm blokkert: " + err.message);
+                });
+            } else if (document.exitFullscreen) {
+                document.exitFullscreen();
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if(e.code === 'ArrowRight') keys.right = true;
+            if(e.code === 'ArrowLeft') keys.left = true;
+            if(e.code === 'ArrowUp') keys.up = true;
+            if(e.code === 'ArrowDown') keys.down = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            if(e.code === 'ArrowRight') keys.right = false;
+            if(e.code === 'ArrowLeft') keys.left = false;
+            if(e.code === 'ArrowUp') keys.up = false;
+            if(e.code === 'ArrowDown') keys.down = false;
+        });
+
+        class AudioSystem {
+            constructor() {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                this.osc = this.ctx.createOscillator();
+                this.osc.type = 'sawtooth';
+                this.filter = this.ctx.createBiquadFilter();
+                this.filter.type = 'lowpass';
+                this.gain = this.ctx.createGain();
+                
+                this.osc.connect(this.filter);
+                this.filter.connect(this.gain);
+                this.gain.connect(this.ctx.destination);
+                
+                this.osc.start();
+                this.gain.gain.value = 0.1;
+                this.currentRPM = 0;
+                this.prevThrottle = 0;
+            }
+
+            update(throttle) {
+                if(this.ctx.state === 'suspended') this.ctx.resume();
+                this.currentRPM += (throttle - this.currentRPM) * 0.1;
+                this.osc.frequency.setTargetAtTime(40 + (this.currentRPM * 120), this.ctx.currentTime, 0.05);
+                this.filter.frequency.setTargetAtTime(200 + (this.currentRPM * 2000), this.ctx.currentTime, 0.05);
+                this.gain.gain.setTargetAtTime(0.1 + (this.currentRPM * 0.3), this.ctx.currentTime, 0.05);
+
+                if (this.prevThrottle > 0.8 && throttle < 0.1) this.triggerBackfire();
+                this.prevThrottle = throttle;
+            }
+
+            triggerBackfire() {
+                const bufferSize = this.ctx.sampleRate * 0.15;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+                const noise = this.ctx.createBufferSource();
+                noise.buffer = buffer;
+                const nGain = this.ctx.createGain();
+                nGain.gain.setValueAtTime(0.8, this.ctx.currentTime);
+                nGain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
+                
+                const bp = this.ctx.createBiquadFilter();
+                bp.type = 'bandpass';
+                bp.frequency.value = 300;
+
+                noise.connect(bp);
+                bp.connect(nGain);
+                nGain.connect(this.ctx.destination);
+                noise.start();
+            }
+        }
+
+        function initBox2D() {
+            if (typeof Box2D === 'undefined') {
+                throw new Error("Box2D-motoren feilet under lasting. Sjekk nettverket eller deaktiver adblock.");
+            }
+            b2Vec2 = Box2D.Common.Math.b2Vec2;
+            b2BodyDef = Box2D.Dynamics.b2BodyDef;
+            b2Body = Box2D.Dynamics.b2Body;
+            b2FixtureDef = Box2D.Dynamics.b2FixtureDef;
+            b2World = Box2D.Dynamics.b2World;
+            b2PolygonShape = Box2D.Collision.Shapes.b2PolygonShape;
+            b2CircleShape = Box2D.Collision.Shapes.b2CircleShape;
+            b2LineJointDef = Box2D.Dynamics.Joints.b2LineJointDef;
+        }
+
+        function startGame(keyboard) {
+            try {
+                initBox2D();
+                
+                useKeyboard = keyboard;
+                document.getElementById('ui-layer').style.display = 'none';
+                canvas = document.getElementById('game-canvas');
+                canvas.style.display = 'block';
+                document.getElementById('fullscreen-btn').style.display = 'block';
+                document.getElementById('debug-info').style.display = 'block';
+                ctx = canvas.getContext('2d');
+                
+                engineAudio = new AudioSystem();
+                
+                resize();
+                window.addEventListener('resize', resize);
+                
+                initPhysics();
+                gameActive = true;
+                requestAnimationFrame(loop);
+                
+            } catch (error) {
+                logError(error.stack || error.message);
+            }
+        }
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        function initPhysics() {
+            world = new b2World(new b2Vec2(0, 10), true);
+
+            const groundDef = new b2BodyDef();
+            groundDef.type = b2Body.b2_staticBody;
+            const groundBody = world.CreateBody(groundDef);
+
+            let currentX = -5;
+            let currentY = 15;
+            
+            for (let i = 0; i < 300; i++) {
+                let difficulty = i / 300;
+                let stepX = 2;
+                let wave = Math.sin(currentX * 0.2) * 2;
+                let noise = (Math.random() - 0.5) * (3 * difficulty);
+                let nextX = currentX + stepX;
+                let nextY = 15 + wave + noise - (difficulty * 10); 
+
+                const edgeShape = new b2PolygonShape();
+                edgeShape.SetAsEdge(new b2Vec2(currentX, currentY), new b2Vec2(nextX, nextY));
+                
+                const fixDef = new b2FixtureDef();
+                fixDef.shape = edgeShape;
+                fixDef.friction = 1.0; 
+                fixDef.restitution = 0.1;
+                groundBody.CreateFixture(fixDef);
+
+                if (nextY < currentY && Math.random() > 0.5 && i < 150) {
+                    for(let p = 0; p < 4; p++) {
+                        const pDef = new b2BodyDef();
+                        pDef.type = b2Body.b2_dynamicBody;
+                        pDef.position.Set(currentX + (Math.random()), currentY - (Math.random() * 2));
+                        const pBody = world.CreateBody(pDef);
+                        const pFix = new b2FixtureDef();
+                        pFix.shape = new b2CircleShape(0.2); 
+                        pFix.density = 2.0;
+                        pFix.friction = 0.5;
+                        pBody.CreateFixture(pFix);
+                    }
+                }
+                currentX = nextX;
+                currentY = nextY;
+            }
+
+            car = {};
+            const chDef = new b2BodyDef();
+            chDef.type = b2Body.b2_dynamicBody;
+            chDef.position.Set(5, 5);
+            car.chassis = world.CreateBody(chDef);
+            
+            const chShape = new b2PolygonShape();
+            chShape.SetAsBox(1.6, 0.4); 
+            const chFix = new b2FixtureDef();
+            chFix.shape = chShape;
+            chFix.density = 80.0; 
+            car.chassis.CreateFixture(chFix);
+
+            const wheelFix = new b2FixtureDef();
+            wheelFix.shape = new b2CircleShape(0.5); 
+            wheelFix.density = 20.0;
+            wheelFix.friction = 2.0; 
+            wheelFix.restitution = 0.2; 
+
+            const wheelDef = new b2BodyDef();
+            wheelDef.type = b2Body.b2_dynamicBody;
+
+            wheelDef.position.Set(5 - 1.2, 5 + 0.6);
+            car.wheelR = world.CreateBody(wheelDef);
+            car.wheelR.CreateFixture(wheelFix);
+
+            wheelDef.position.Set(5 + 1.2, 5 + 0.6);
+            car.wheelF = world.CreateBody(wheelDef);
+            car.wheelF.CreateFixture(wheelFix);
+
+            const jointDef = new b2LineJointDef();
+            const axis = new b2Vec2(0, 1); 
+
+            jointDef.Initialize(car.chassis, car.wheelR, car.wheelR.GetWorldCenter(), axis);
+            jointDef.enableLimit = true;
+            jointDef.lowerTranslation = -0.15; 
+            jointDef.upperTranslation = 0.4;  
+            car.jointR = world.CreateJoint(jointDef);
+
+            jointDef.Initialize(car.chassis, car.wheelF, car.wheelF.GetWorldCenter(), axis);
+            car.jointF = world.CreateJoint(jointDef);
+        }
+
+        function applySuspensionDamper(joint, wheel) {
+            const translation = joint.GetJointTranslation();
+            const speed = joint.GetJointSpeed();
+            
+            const k = 400;
+            const c = 20;  
+            const force = -k * translation - c * speed;
+
+            const forceVec = car.chassis.GetWorldVector(new b2Vec2(0, force));
+            wheel.ApplyForce(forceVec, wheel.GetWorldCenter());
+            car.chassis.ApplyForce(new b2Vec2(-forceVec.x, -forceVec.y), wheel.GetWorldCenter());
+        }
+
+        function applyPhysicsInput() {
+            let throttle = 0;
+            let tilt = 0;
+
+            if (useKeyboard) {
+                if (keys.right) throttle = 1;
+                if (keys.left) throttle = -1; 
+                if (keys.up) tilt = -1; 
+                if (keys.down) tilt = 1; 
+            } else {
+                const gps = navigator.getGamepads ? navigator.getGamepads() : [];
+                const gp = gps[0];
+                if (gp && gp.buttons && gp.buttons.length > 7) {
+                    throttle = gp.buttons[7].value; 
+                    if (throttle === 0 && gp.buttons[6].value > 0) throttle = -gp.buttons[6].value; 
+                    tilt = gp.axes[0]; 
+                }
+            }
+
+            const maxTorque = 400;
+
+            if (throttle > 0.05 || throttle < -0.05) {
+                car.wheelR.ApplyTorque(maxTorque * throttle);
+                car.wheelF.ApplyTorque(maxTorque * throttle);
+            } else {
+                car.wheelR.SetAngularVelocity(car.wheelR.GetAngularVelocity() * 0.96);
+                car.wheelF.SetAngularVelocity(car.wheelF.GetAngularVelocity() * 0.96);
+            }
+
+            if (Math.abs(tilt) > 0.1) {
+                car.chassis.ApplyTorque(tilt * 1000);
+            }
+
+            applySuspensionDamper(car.jointR, car.wheelR);
+            applySuspensionDamper(car.jointF, car.wheelF);
+
+            engineAudio.update(Math.abs(throttle));
+
+            const vel = car.chassis.GetLinearVelocity();
+            const kmh = Math.round(Math.sqrt(vel.x * vel.x + vel.y * vel.y) * 3.6);
+            document.getElementById('debug-info').innerText = `Hastighet: ${kmh} km/t`;
+        }
+
+        function drawWorld() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            const carPos = car.chassis.GetPosition();
+            ctx.save();
+            ctx.translate(canvas.width / 2, canvas.height / 2 + 100);
+            ctx.scale(SCALE, SCALE);
+            ctx.translate(-carPos.x, -carPos.y);
+
+            for (let b = world.GetBodyList(); b; b = b.GetNext()) {
+                const type = b.GetType();
+                const pos = b.GetPosition();
+                const angle = b.GetAngle();
+
+                ctx.save();
+                ctx.translate(pos.x, pos.y);
+                ctx.rotate(angle);
+
+                for (let f = b.GetFixtureList(); f; f = f.GetNext()) {
+                    const shape = f.GetShape();
+
+                    if (shape instanceof b2PolygonShape) {
+                        ctx.beginPath();
+                        const vertices = shape.GetVertices();
+                        ctx.moveTo(vertices[0].x, vertices[0].y);
+                        for (let i = 1; i < shape.GetVertexCount(); i++) {
+                            ctx.lineTo(vertices[i].x, vertices[i].y);
+                        }
+                        ctx.closePath();
+                        
+                        if (type === b2Body.b2_staticBody) {
+                            ctx.strokeStyle = '#555'; ctx.lineWidth = 0.05; ctx.stroke();
+                        } else {
+                            ctx.fillStyle = '#cc0000'; ctx.fill();
+                        }
+                    } else if (shape instanceof b2CircleShape) {
+                        ctx.beginPath();
+                        ctx.arc(0, 0, shape.GetRadius(), 0, Math.PI * 2);
+                        
+                        if(b === car.wheelR || b === car.wheelF) {
+                            ctx.fillStyle = '#222'; ctx.fill();
+                            ctx.moveTo(0, 0); ctx.lineTo(shape.GetRadius(), 0);
+                            ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.05; ctx.stroke();
+                        } else {
+                            ctx.fillStyle = '#886644'; ctx.fill();
+                        }
+                    }
+                }
+                ctx.restore();
+            }
+            ctx.restore();
+        }
+
+        function loop() {
+            if (!gameActive) return;
+            applyPhysicsInput();
+            world.Step(1 / 60, 10, 10);
+            world.ClearForces();
+            drawWorld();
+            requestAnimationFrame(loop);
+        }
+    </script>
+</body>
+</html>
